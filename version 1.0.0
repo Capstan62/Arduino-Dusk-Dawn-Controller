@@ -1,0 +1,1124 @@
+// Dusk Down Relay Controller
+// Alessandro Capitani 2021
+// Version 1.0.0
+
+#include <Arduino.h>
+#include <Dusk2Dawn.h>
+#include "Wire.h"
+#include <EEPROMex.h>
+
+#include <Adafruit_RGBLCDShield.h>
+#include <utility/Adafruit_MCP23017.h>
+
+Adafruit_RGBLCDShield lcd = Adafruit_RGBLCDShield();
+
+#define DS3231_I2C_ADDRESS 0x68
+#define keyNone 0
+#define keyRight 1
+#define keyUp 2
+#define keyDown 3
+#define keyLeft 4
+#define keySelect 5
+#define RelayPINA 11
+#define RelayPINB 12
+
+#define maxOffset 180
+
+// These #defines make it easy to set the backlight color
+#define RED 0x1
+#define YELLOW 0x3
+#define GREEN 0x2
+#define TEAL 0x6
+#define BLUE 0x4
+#define VIOLET 0x5
+#define WHITE 0x7
+
+int makeodd = 0;
+int temp1 = 1;
+int temp2 = 1;
+int keyread = 0;
+
+unsigned long time;
+boolean checktime;
+boolean LightOn;
+boolean DST;
+
+boolean SwitchFlag;
+int RelayMode;
+
+int UTC;
+float Longitudo;
+float Latitudo;
+
+
+int OffsetSRise = 0;
+int OffsetSSet = 0;
+
+// ***********  FUNCTIONS *********************
+
+void SplashScreen()
+{
+
+  lcd.clear();
+  lcd.print(" Light Control "); // intro screen
+  lcd.setCursor(0, 1);
+  lcd.print("A. Capitani 2021");
+  delay(3000);
+  lcd.clear();
+  lcd.setCursor(0, 0);
+}
+
+
+
+// DEC TO BCD
+// Convert normal decimal numbers to binary coded decimal
+byte decToBcd(byte val)
+{
+  return ((val / 10 * 16) + (val % 10));
+}
+
+
+// BCD TO DEC
+// Convert binary coded decimal to normal decimal numbers
+byte bcdToDec(byte val)
+{
+  return ((val / 16 * 10) + (val % 16));
+}
+
+
+
+//  ********* READ DS3231 TIME ******************
+//the setDS3231time function sets up time&date by pressing SELECT button for more than 1/ second
+// UP - DOWN change values ; RIGHT move to next parameters. SECONDS set at 00 by default after Minutes entry.
+
+void readDS3231time(byte *second,
+                    byte *minute,
+                    byte *hour,
+                    byte *dayOfWeek,
+                    byte *dayOfMonth,
+                    byte *month,
+                    byte *year)
+{
+  Wire.beginTransmission(DS3231_I2C_ADDRESS);
+  Wire.write(0); // set DS3231 register pointer to 00h
+  Wire.endTransmission();
+  Wire.requestFrom(DS3231_I2C_ADDRESS, 7);
+  // request seven bytes of data from DS3231 starting from register 00h
+  *second = bcdToDec(Wire.read() & 0x7f);
+  *minute = bcdToDec(Wire.read());
+  *hour = bcdToDec(Wire.read() & 0x3f);
+  *dayOfWeek = bcdToDec(Wire.read());
+  *dayOfMonth = bcdToDec(Wire.read());
+  *month = bcdToDec(Wire.read());
+  *year = bcdToDec(Wire.read());
+}
+
+
+//**** SOFT RESET **************
+
+void (*Reset)(void) = 0; // function to reset the Arduino board
+
+
+// ******** KEY READ **************
+int LeggiTasto() //key read routine
+{
+  uint8_t buttons = lcd.readButtons();
+
+  if (buttons)
+  {
+
+    if (buttons & BUTTON_UP)
+    {
+      return keyUp;
+    }
+    if (buttons & BUTTON_DOWN)
+    {
+      return keyDown;
+    }
+    if (buttons & BUTTON_LEFT)
+    {
+      return keyLeft;
+    }
+    if (buttons & BUTTON_RIGHT)
+    {
+      return keyRight;
+    }
+    if (buttons & BUTTON_SELECT)
+    {
+      return keySelect;
+    }
+    return keyNone;
+  }
+}
+
+// ******** BLINK DISPLAY **************
+void blinkDisplay()
+{
+
+  time = millis() / 200;
+  checktime = time % 5;
+  if (checktime == true)
+  {
+    lcd.display();
+  }
+  else
+  {
+    lcd.noDisplay();
+  }
+}
+
+// ******** GEO LOC SETTINGS INPUT + OFFSET **************
+void setLatLong()
+{
+
+  int speedy = 0;
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Latitude");
+  lcd.setCursor(0, 1);
+  lcd.print(Latitudo);
+
+  keyread = LeggiTasto();
+  while (keyread != 1)
+  {
+
+    blinkDisplay();
+
+    keyread = LeggiTasto();
+    if (keyread == 2)
+    {
+      Latitudo = Latitudo + (float)speedy / 100;
+      if (Latitudo > 65)
+        Latitudo = -64.99;
+      delay(200 - speedy);
+    }
+    else if (keyread == 3)
+    {
+      Latitudo = Latitudo - (float)speedy / 100;
+      if (Latitudo < -64.99)
+        Latitudo = 65;
+      delay(200 - speedy);
+    }
+
+    delay(50);
+    if (keyread > 0)
+    {
+      lcd.setCursor(0, 1);
+      lcd.print("       ");
+      lcd.setCursor(0, 1);
+      lcd.print(Latitudo);
+
+      if (speedy <= 100)
+      {
+        speedy = speedy + 1;
+      }
+    }
+    else
+    {
+      speedy = 0;
+    }
+  }
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Longitude");
+  lcd.setCursor(0, 1);
+  lcd.print(Longitudo);
+  delay(500);
+
+  keyread = LeggiTasto();
+  while (keyread != 1)
+  {
+
+    blinkDisplay();
+
+    keyread = LeggiTasto();
+    if (keyread == 2)
+    {
+      Longitudo = Longitudo + (float)speedy / 100;
+      if (Longitudo > 180)
+        Longitudo = -179.99;
+      delay(200 - speedy);
+    }
+
+    else if (keyread == 3)
+    {
+      Longitudo = Longitudo - (float)speedy / 100;
+      if (Longitudo < -179.99)
+        Longitudo = 180;
+      delay(200 - speedy);
+    }
+
+    delay(20);
+    if (keyread > 0)
+    {
+      lcd.setCursor(0, 1);
+      lcd.print("        ");
+      lcd.setCursor(0, 1);
+      lcd.print(Longitudo);
+
+      if (speedy <= 100)
+      {
+        speedy = speedy + 1;
+      }
+    }
+    else
+    {
+      speedy = 0;
+    }
+  }
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Offset Alba");
+  lcd.setCursor(0, 1);
+  lcd.print(OffsetSRise);
+
+  delay(500);
+  keyread = LeggiTasto();
+  while (keyread != 1)
+  {
+
+    blinkDisplay();
+
+    keyread = LeggiTasto();
+    if (keyread == 2)
+    {
+      OffsetSRise = OffsetSRise + 1;
+      if (OffsetSRise >= maxOffset)
+        OffsetSRise = -maxOffset;
+      delay(200 - speedy);
+    }
+
+    else if (keyread == 3)
+    {
+      OffsetSRise = OffsetSRise - 1;
+      if (OffsetSRise <= -maxOffset)
+        OffsetSRise = maxOffset;
+      delay(200 - speedy);
+    }
+
+    delay(20);
+    if (keyread > 0)
+    {
+      lcd.setCursor(0, 1);
+      lcd.print("      ");
+      lcd.setCursor(0, 1);
+      lcd.print(OffsetSRise);
+
+      if (speedy <= 195)
+      {
+        speedy = speedy + 10;
+      }
+    }
+    else
+    {
+      speedy = 0;
+    }
+  }
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Offset Tramonto");
+  lcd.setCursor(0, 1);
+  lcd.print(OffsetSSet);
+
+  delay(500);
+  keyread = LeggiTasto();
+  while (keyread != 1)
+  {
+
+    blinkDisplay();
+
+    keyread = LeggiTasto();
+    if (keyread == 2)
+    {
+      OffsetSSet = OffsetSSet + 1;
+      if (OffsetSSet >= maxOffset)
+        OffsetSSet = -maxOffset;
+      delay(200 - speedy);
+    }
+
+    else if (keyread == 3)
+    {
+      OffsetSSet = OffsetSSet - 1;
+      if (OffsetSSet <= -maxOffset)
+        OffsetSSet = maxOffset;
+      delay(200 - speedy);
+    }
+
+    delay(20);
+    if (keyread > 0)
+    {
+      lcd.setCursor(0, 1);
+      lcd.print("      ");
+      lcd.setCursor(0, 1);
+      lcd.print(OffsetSSet);
+
+      if (speedy <= 195)
+      {
+        speedy = speedy + 10;
+      }
+    }
+    else
+    {
+      speedy = 0;
+    }
+  }
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("UTC Zone");
+  lcd.setCursor(0, 1);
+  lcd.print(UTC);
+
+  delay(500);
+  keyread = LeggiTasto();
+  while (keyread != 1)
+  {
+
+    blinkDisplay();
+
+    keyread = LeggiTasto();
+    if (keyread == 2)
+    {
+      UTC = UTC + 1;
+      if (UTC >= 13)
+        UTC = -12;
+      delay(200 - speedy);
+    }
+
+    else if (keyread == 3)
+    {
+      UTC = UTC - 1;
+      if (UTC <= -13)
+        UTC = 12;
+      delay(200 - speedy);
+    }
+
+    delay(20);
+    if (keyread > 0)
+    {
+      lcd.setCursor(0, 1);
+      lcd.print("      ");
+      lcd.setCursor(0, 1);
+      lcd.print(UTC);
+
+      if (speedy <= 195)
+      {
+        speedy = speedy + 10;
+      }
+    }
+    else
+    {
+      speedy = 0;
+    }
+  }
+
+  speedy = 0;
+  lcd.clear();
+  lcd.display();
+
+  EEPROM.updateFloat(0, Latitudo);
+
+  EEPROM.updateFloat(10, Longitudo);
+
+  EEPROM.updateInt(20, OffsetSRise);
+
+  EEPROM.updateInt(30, OffsetSSet);
+
+  EEPROM.updateInt(40, UTC);
+}
+
+// ******** AUTO DST UPDATE **************
+void AdjustDST()
+
+{
+  byte second, minute, hour, dayOfWeek, dayOfMonth, month, year;
+  readDS3231time(&second, &minute, &hour, &dayOfWeek, &dayOfMonth, &month,
+                 &year); //reads current time from DS3231 registers
+
+  if (dayOfWeek == 1 && month == 10 && dayOfMonth >= 25 && hour == 3 && DST == 1)
+  {
+    hour = hour - 1;
+    Wire.beginTransmission(DS3231_I2C_ADDRESS);
+    Wire.write(2);              // set next input to start at the hour register
+    Wire.write(decToBcd(hour)); // set hours
+    Wire.endTransmission();
+
+    DST = 0;
+    EEPROM.updateByte(50, DST);
+  }
+
+  if (dayOfWeek == 1 && month == 3 && dayOfMonth >= 25 && hour == 2 && DST == 0)
+  {
+    hour = hour + 1;
+    Wire.beginTransmission(DS3231_I2C_ADDRESS);
+    Wire.write(2);              // set next input to start at the hour register
+    Wire.write(decToBcd(hour)); // set hours
+    Wire.endTransmission();
+
+    DST = 1;
+    EEPROM.updateByte(50, DST);
+  }
+}
+
+// ******** SET TIME/DATE **************
+void setDS3231time()
+{
+
+  byte second, minute, hour, dayOfWeek, dayOfMonth, month, year;
+  readDS3231time(&second, &minute, &hour, &dayOfWeek, &dayOfMonth, &month,
+                 &year); //reads current time from DS3231 registers
+
+  // *** SET YEAR ***
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("SET YEAR");
+  lcd.setCursor(0, 1);
+  lcd.print(year + 2000);
+
+  keyread = LeggiTasto();
+
+  while (keyread != 1)
+  {
+
+    blinkDisplay();
+
+    keyread = LeggiTasto();
+    if (keyread == 2)
+    {
+      year = year + 1;
+      if (year == 37)
+        year = 17;
+      delay(200);
+    }
+    else if (keyread == 3)
+    {
+      year = year - 1;
+      if (year == 16)
+        year = 36;
+      delay(200);
+    }
+
+    // delay(50);
+    if (keyread > 0)
+    {
+      lcd.setCursor(0, 1);
+      lcd.print("  ");
+      lcd.setCursor(0, 1);
+      lcd.print(year + 2000);
+    }
+  }
+
+  delay(300);
+  // *** SET MONTH ***
+  String monthtxt[] = {"January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"};
+  lcd.display();
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("SET MONTH");
+  lcd.setCursor(0, 1);
+  lcd.print(monthtxt[month - 1]);
+
+  keyread = LeggiTasto();
+
+  while (keyread != 1)
+  {
+
+    blinkDisplay();
+
+    keyread = LeggiTasto();
+    if (keyread == 2)
+    {
+      month = month + 1;
+      if (month == 13)
+        month = 1;
+      delay(200);
+    }
+    if (keyread == 3)
+    {
+      month = month - 1;
+      if (month == 0)
+        month = 12;
+      delay(200);
+    }
+    //  delay(50);
+    if (keyread > 0)
+    {
+      lcd.setCursor(0, 1);
+      lcd.print("         ");
+      lcd.setCursor(0, 1);
+      lcd.print(monthtxt[month - 1]);
+      keyread = LeggiTasto();
+    }
+  }
+
+  delay(300);
+
+  // *** SET DAY of MONTH ***
+  lcd.display();
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("SET DAY OF MONTH");
+  lcd.setCursor(0, 1);
+  lcd.print(dayOfMonth);
+
+  keyread = LeggiTasto();
+
+  while (keyread != 1)
+  {
+
+    blinkDisplay();
+
+    keyread = LeggiTasto();
+    if (keyread == 2)
+    {
+      dayOfMonth = dayOfMonth + 1;
+      if (dayOfMonth == 32)
+        dayOfMonth = 1;
+      delay(200);
+    }
+    if (keyread == 3)
+    {
+      dayOfMonth = dayOfMonth - 1;
+      if (dayOfMonth == 00)
+        dayOfMonth = 31;
+      delay(200);
+    }
+    //  delay(50);
+    if (keyread > 0)
+    {
+
+      lcd.setCursor(0, 1);
+      lcd.print("  ");
+      lcd.setCursor(0, 1);
+      lcd.print(dayOfMonth);
+      keyread = LeggiTasto();
+    }
+  }
+
+  delay(300);
+
+  // *** SET dayOfWeek ***
+
+  String weektxt[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+
+  lcd.display();
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("SET DAY OF WEEK");
+  lcd.setCursor(0, 1);
+  lcd.print(weektxt[dayOfWeek - 1]);
+
+  keyread = LeggiTasto();
+
+  while (keyread != 1)
+  {
+
+    blinkDisplay();
+
+    keyread = LeggiTasto();
+    if (keyread == 2)
+    {
+      dayOfWeek = dayOfWeek + 1;
+      if (dayOfWeek == 8)
+        dayOfWeek = 1;
+      delay(200);
+    }
+    if (keyread == 3)
+    {
+      dayOfWeek = dayOfWeek - 1;
+      if (dayOfWeek == 00)
+        dayOfWeek = 7;
+      delay(200);
+    }
+    // delay(50);
+    if (keyread > 0)
+    {
+      lcd.setCursor(0, 1);
+      lcd.print("         ");
+      lcd.setCursor(0, 1);
+      lcd.print(weektxt[dayOfWeek - 1]);
+      keyread = LeggiTasto();
+    }
+  }
+
+  //*** DST ****
+
+  delay(300);
+  lcd.display();
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("DST (ora legale)");
+  lcd.setCursor(0, 1);
+  lcd.print(DST);
+
+  delay(500);
+  keyread = LeggiTasto();
+  while (keyread != 1)
+  {
+
+    blinkDisplay();
+
+    keyread = LeggiTasto();
+    if (keyread == 2)
+    {
+      DST = !DST;
+
+      delay(200);
+    }
+
+    else if (keyread == 3)
+    {
+      DST = !DST;
+
+      delay(200);
+    }
+
+    //  delay(20);
+    if (keyread > 0)
+    {
+      lcd.setCursor(0, 1);
+      lcd.print("      ");
+      lcd.setCursor(0, 1);
+      lcd.print(DST);
+    }
+  }
+
+  EEPROM.updateByte(50, DST);
+
+  // *** SET hour ***
+  delay(300);
+  lcd.display();
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("SET HOUR");
+  lcd.setCursor(0, 1);
+  lcd.print(hour);
+
+  keyread = LeggiTasto();
+
+  while (keyread != 1)
+  {
+
+    blinkDisplay();
+
+    keyread = LeggiTasto();
+    if (keyread == 2)
+    {
+      hour = hour + 1;
+      if (hour == 25)
+        hour = 0;
+      delay(200);
+    }
+    if (keyread == 3)
+    {
+      if (hour == 0)
+        hour = 25;
+      hour = hour - 1;
+      delay(200);
+    }
+    // delay(50);
+    if (keyread > 0)
+    {
+      lcd.setCursor(0, 1);
+      lcd.print("  ");
+      lcd.setCursor(0, 1);
+      lcd.print(hour);
+      keyread = LeggiTasto();
+    }
+  }
+
+  // *** SET minute ***
+  delay(300);
+  lcd.display();
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("SET MINUTES");
+  lcd.setCursor(0, 1);
+  lcd.print(minute);
+
+  keyread = LeggiTasto();
+
+  while (keyread != 1)
+  {
+
+    blinkDisplay();
+
+    keyread = LeggiTasto();
+    if (keyread == 2)
+    {
+      minute = minute + 1;
+      if (minute == 60)
+        minute = 00;
+      delay(200);
+    }
+    if (keyread == 3)
+    {
+      if (minute == 0)
+        minute = 60;
+      minute = minute - 1;
+      delay(200);
+    }
+    // delay(50);
+    if (keyread > 0)
+    {
+      lcd.setCursor(0, 1);
+      lcd.print("  ");
+      lcd.setCursor(0, 1);
+      lcd.print(minute);
+      keyread = LeggiTasto();
+    }
+  }
+
+  second = 0;
+  lcd.clear();
+
+  lcd.display();
+
+  // ... and finally sending time and date data to DS3231
+  Wire.beginTransmission(DS3231_I2C_ADDRESS);
+  Wire.write(0);                    // set next input to start at the seconds register
+  Wire.write(decToBcd(second));     // set seconds
+  Wire.write(decToBcd(minute));     // set minutes
+  Wire.write(decToBcd(hour));       // set hours
+  Wire.write(decToBcd(dayOfWeek));  // set day of week (1=Sunday, 7=Saturday)
+  Wire.write(decToBcd(dayOfMonth)); // set date (1 to 31)
+  Wire.write(decToBcd(month));      // set month
+  Wire.write(decToBcd(year));       // set year (0 to 99)
+  Wire.endTransmission();
+}
+
+// ******** MAIN FUNCTION - TIME DISPLAY AND RELAY ACTIVATION **************
+void displayTime()
+{
+  byte second, minute, hour, dayOfWeek, dayOfMonth, month, year;
+  // retrieve data from DS3231
+  //byte MSB;
+  //int LSB;
+  readDS3231time(&second, &minute, &hour, &dayOfWeek, &dayOfMonth, &month,
+                 &year);
+
+  // *** Main Display data ****
+  lcd.home();
+
+  Dusk2Dawn MyPlace(Latitudo, Longitudo, UTC);
+  int Sunrise = MyPlace.sunrise((year + 2000), month, dayOfMonth, DST);
+  int Sunset = MyPlace.sunset((year + 2000), month, dayOfMonth, DST);
+
+  if (second > 10 && second <= 13 && minute % 10 == 00) // forces splash screen every 10th minute for 3 secs
+  {
+
+    SplashScreen();
+  }
+
+  else
+  {
+    String s = String(second); // formatting routine for avoiding single digit on display
+    if (s.length() < 2)
+      s = "0" + s;
+    String m = String(minute);
+    if (m.length() < 2)
+      m = "0" + m;
+    String h = String(hour);
+    if (h.length() < 2)
+      h = "0" + h;
+
+    lcd.print(h);
+    lcd.setCursor(3, 0);
+    lcd.print(m);
+    //lcd.setCursor (6, 0);
+    //lcd.print(s);
+
+    String day = String(dayOfMonth); // formatting routine for avoiding single digit on display
+    if (day.length() < 2)
+      day = "0" + day;
+    String mo = String(month);
+    if (mo.length() < 2)
+      mo = "0" + mo;
+
+    lcd.setCursor(6, 0);
+    lcd.print(day);
+    lcd.print("/");
+    lcd.print(mo);
+    lcd.print("/");
+    lcd.print(year + 2000);
+
+    // blinking ":" symbol on display
+
+    if (millis() / 500 % 2 == false)
+    {
+      lcd.setCursor(2, 0);
+      lcd.print(" ");
+    }
+    else
+    {
+      lcd.setCursor(2, 0);
+      lcd.print(":");
+    }
+
+    // A static method converts the returned time to a 24-hour clock format.
+    // Arguments are a character array and time in minutes.
+    char time[6];
+    Dusk2Dawn::min2str(time, (Sunrise + OffsetSRise));
+
+    char time2[6];
+    Dusk2Dawn::min2str(time2, (Sunset + OffsetSSet));
+
+    lcd.setCursor(0, 1);
+    switch (RelayMode)
+    {
+    case 0:
+      lcd.print("      ALWAYS OFF");
+      break;
+
+    case 1:
+      lcd.print("       ALWAYS ON");
+      break;
+
+    case 2:
+      lcd.setCursor(0, 1);
+      lcd.print(time);
+      lcd.print("  ");
+      lcd.print(time2);
+      break;
+    default:
+      break;
+    }
+
+    // NB: Time is returned in minutes elapsed since midnight.
+
+    int ElapTime = (hour * 60) + minute;
+
+    //**** CORE CHECKPOINT FOR RELAY ACTIVATION - DAWN DUSK CHECK AND OVERRIDE *************
+    // please note relay logic are reversed due to the relay board used
+
+    if (RelayMode == 1)
+    {
+      lcd.print("  ON");
+      digitalWrite(RelayPINA, false);
+      digitalWrite(RelayPINB, false);
+    }
+
+    else if ((ElapTime > (Sunrise + OffsetSRise - 1)) && (ElapTime < (Sunset + OffsetSSet - 1)) || (RelayMode == 0))
+    {
+      lcd.print(" OFF");
+      digitalWrite(RelayPINA, true);
+      digitalWrite(RelayPINB, true);
+    }
+
+    else
+    {
+      lcd.print("  ON");
+      digitalWrite(RelayPINA, false);
+      digitalWrite(RelayPINB, false);
+    }
+  }
+}
+
+void ModeDisplay()
+
+{
+  switch (RelayMode)
+  {
+  case 0:
+    lcd.print("      ALWAYS OFF");
+    break;
+  case 1:
+    lcd.print("       ALWAYS ON");
+    break;
+  case 2:
+    lcd.print("  DUSK DAWN AUTO");
+    break;
+  default:
+    break;
+  }
+}
+
+void setRelayMode()
+{
+
+  //*** Relay Mode ****
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Relay Mode");
+  lcd.setCursor(0, 1);
+
+  ModeDisplay();
+
+  delay(500);
+  keyread = LeggiTasto();
+  while (keyread != 1)
+  {
+
+    blinkDisplay();
+    keyread = LeggiTasto();
+    if (keyread == 2)
+    {
+      RelayMode = RelayMode + 1;
+      if (RelayMode == 3)
+        RelayMode = 0;
+      delay(200);
+    }
+    else if (keyread == 3)
+    {
+      RelayMode = RelayMode - 1;
+      if (RelayMode == -1)
+        RelayMode = 3;
+      delay(200);
+    }
+
+    // delay(50);
+    if (keyread > 0)
+    {
+      lcd.setCursor(0, 1);
+      ModeDisplay();
+    }
+  }
+
+  EEPROM.updateInt(60, RelayMode);
+  lcd.display();
+}
+
+void EEPROMdefault()
+{
+
+  lcd.clear();
+  lcd.print("  INITIALIZING  "); // intro screen
+  lcd.setCursor(0, 1);
+  lcd.print("  EEPROM  DATA  ");
+  delay(2000);
+  EEPROM.writeFloat(0, 46.20);  //default Lat
+  EEPROM.writeFloat(10, 10.20); //default Long
+
+  EEPROM.writeFloat(20, OffsetSRise); //default Offset Sunrise
+  EEPROM.writeFloat(30, OffsetSSet);  //default Offset Sunset
+
+  EEPROM.writeInt(40, 1); // default UTC time zone
+
+  EEPROM.writeByte(50, 0); // default DST 0 = false
+
+  EEPROM.writeInt(60, 2); // default RelayMode 0=OFF, 1=ALWAYS ON, 2=AUTO
+
+  lcd.clear();
+  lcd.print("  INITIALIZING  "); // intro screen
+  lcd.setCursor(0, 1);
+  lcd.print("     DONE !     ");
+
+  delay(2000);
+  Reset(); //restart Arduino
+}
+
+void setup()
+{
+
+  lcd.begin(16, 2);
+  lcd.setBacklight(WHITE);
+
+  Wire.begin();
+
+  Serial.begin(9600);
+
+  pinMode(RelayPINA, OUTPUT);
+  pinMode(RelayPINB, OUTPUT);
+  // pinMode(11, INPUT_PULLUP);
+  // pinMode(12, INPUT_PULLUP);
+
+  SplashScreen();
+
+  if ((EEPROM.read(0) == 0xFF) || (EEPROM.read(10) == 0xFF)) // default EEPROM at first usage at standard values
+  {
+    EEPROMdefault();
+  }
+  else
+  {
+
+    Latitudo = EEPROM.readFloat(0); // loads last setup values in RAM
+    Longitudo = EEPROM.readFloat(10);
+
+    OffsetSRise = EEPROM.readInt(20);
+    OffsetSSet = EEPROM.readInt(30);
+
+    UTC = EEPROM.readInt(40);
+
+    DST = EEPROM.readByte(50);
+
+    RelayMode = EEPROM.readInt(60);
+  }
+}
+
+void loop()
+{
+
+  // Heartbeat routine - refreshes the time on the display every second, without using the delay function
+
+  time = millis() / 500;
+  checktime = (time + makeodd) % 2;
+
+  if (checktime == true)
+  {
+    makeodd = makeodd + 1; // force next check to become odd->false;
+
+    AdjustDST();
+    //CheckSwitch();
+
+    displayTime(); // display the real-time clock data on the LCD,
+
+    keyread = LeggiTasto(); // checks for "select" key press for launching Time and Date setup function
+
+    if (keyread == 5)
+    {
+
+      delay(500);
+      keyread = LeggiTasto();
+      if (keyread == 5)
+      {
+
+        setDS3231time();
+      }
+    }
+
+    if (keyread == 4)
+    {
+
+      delay(500);
+      keyread = LeggiTasto();
+      if (keyread == 4)
+      {
+
+        setLatLong();
+      }
+    }
+
+    if (keyread == 1)
+    {
+
+      delay(500);
+      keyread = LeggiTasto();
+      if (keyread == 1)
+      {
+
+        setRelayMode();
+      }
+    }
+
+    if (keyread == 2)
+    {
+
+      delay(8000);
+      keyread = LeggiTasto();
+      if (keyread == 2)
+      {
+
+        EEPROMdefault(); //forces default values to EEPROM after 8 secs, then restarts.
+      }
+    }
+
+    // ***** extra code out of the time display loop here if required *****
+    //
+  }
+}
