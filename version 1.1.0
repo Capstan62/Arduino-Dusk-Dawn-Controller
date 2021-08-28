@@ -43,7 +43,7 @@ int keyread = 0;
 
 unsigned long time;
 unsigned long WatchDog =0;
-unsigned long Now =0;
+
 boolean checktime;
 boolean checktime2;
 boolean LightOn;
@@ -73,7 +73,7 @@ void SplashScreen()
 {
 
   lcd.clear();
-  lcd.print(" Light Control "); // intro screen
+  lcd.print(" DuskDown 1.1.0 "); // intro screen
   lcd.setCursor(0, 1);
   lcd.print("A. Capitani 2021");
   delay(3000);
@@ -1088,8 +1088,6 @@ void setup()
   lcd.setBacklight(WHITE);
 
   Wire.begin();
-
-  Serial.begin(9600);
 
   pinMode(RelayPINA, OUTPUT);
   pinMode(RelayPINB, OUTPUT);
