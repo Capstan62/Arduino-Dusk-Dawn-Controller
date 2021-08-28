@@ -55,7 +55,6 @@ int RelayMode;
 int UTC;
 float Longitudo;
 float Latitudo;
-//Dusk2Dawn MyPlace(Longitudo, Latitudo, 1);
 
 int OffsetSRise = 0;
 int OffsetSSet = 0;
